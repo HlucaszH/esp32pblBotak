@@ -4,6 +4,7 @@
 
 #include <stdio.h>
 #include <math.h>
+#include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/adc.h"
@@ -12,281 +13,110 @@
 
 // ===================== KONFIGURACJA =====================
 
-// ADC - piny GPIO dla ESP32-C3
 // GPIO0 = ADC1_CH0 -> U  (napięcie całkowite)
 // GPIO1 = ADC1_CH1 -> UN (napięcie na RN)
 // GPIO2 = ADC1_CH2 -> UX (napięcie na ZX)
-#define ADC_CH_U    ADC1_CHANNEL_0   // GPIO0 -> U
-#define ADC_CH_UN   ADC1_CHANNEL_1   // GPIO1 -> UN
-#define ADC_CH_UX   ADC1_CHANNEL_2   // GPIO2 -> UX
+#define ADC_CH_U    ADC1_CHANNEL_0
+#define ADC_CH_UN   ADC1_CHANNEL_1
+#define ADC_CH_UX   ADC1_CHANNEL_2
+#define ADC_ATTEN   ADC_ATTEN_DB_12
+#define ADC_SAMPLES 64
 
-#define ADC_ATTEN   ADC_ATTEN_DB_12  // zakres 0-3.3V
-#define ADC_SAMPLES 64               // liczba próbek do uśrednienia
-
-// Rezystancja wzorcowa RN [Ohm] - podaj rzeczywistą wartość!
+// Rezystancja wzorcowa [Ohm] - zmień na rzeczywistą wartość RN!
 #define RN 100.0f
 
-// I2C - OLED SSD1306
-#define I2C_MASTER_SCL_IO    8    // GPIO8 = SCL
-#define I2C_MASTER_SDA_IO    10   // GPIO10 = SDA
-#define I2C_MASTER_NUM       I2C_NUM_0
-#define I2C_MASTER_FREQ_HZ   400000
-#define OLED_I2C_ADDR        0x3C
-#define OLED_WIDTH           128
-#define OLED_HEIGHT          64
-#define OLED_PAGES           8    // 64/8
+// I2C - OLED
+#define I2C_SCL_IO   8
+#define I2C_SDA_IO   10
+#define I2C_NUM      I2C_NUM_0
+#define I2C_FREQ_HZ  400000
+#define OLED_ADDR    0x3C
+#define OLED_W       128
+#define OLED_PAGES   8
 
 // ===================== BUFOR OLED =====================
-static uint8_t oled_buf[OLED_WIDTH * OLED_PAGES];
+static uint8_t oled_buf[OLED_W * OLED_PAGES];
 
-// ===================== FONT 8x8 (ASCII 32-127) =====================
-// Minimalna czcionka 8x8 - tylko cyfry, litery i symbole potrzebne
-static const uint8_t font8x8[][8] = {
-    // Spacja (32)
-    {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
-    // ! (33)
-    {0x18,0x3C,0x3C,0x18,0x18,0x00,0x18,0x00},
-    // " (34)
-    {0x36,0x36,0x00,0x00,0x00,0x00,0x00,0x00},
-    // # (35)
-    {0x36,0x36,0x7F,0x36,0x7F,0x36,0x36,0x00},
-    // $ (36)
-    {0x0C,0x3E,0x03,0x1E,0x30,0x1F,0x0C,0x00},
-    // % (37)
-    {0x00,0x63,0x33,0x18,0x0C,0x66,0x63,0x00},
-    // & (38)
-    {0x1C,0x36,0x1C,0x6E,0x3B,0x33,0x6E,0x00},
-    // ' (39)
-    {0x06,0x06,0x03,0x00,0x00,0x00,0x00,0x00},
-    // ( (40)
-    {0x18,0x0C,0x06,0x06,0x06,0x0C,0x18,0x00},
-    // ) (41)
-    {0x06,0x0C,0x18,0x18,0x18,0x0C,0x06,0x00},
-    // * (42)
-    {0x00,0x66,0x3C,0xFF,0x3C,0x66,0x00,0x00},
-    // + (43)
-    {0x00,0x0C,0x0C,0x3F,0x0C,0x0C,0x00,0x00},
-    // , (44)
-    {0x00,0x00,0x00,0x00,0x00,0x0C,0x0C,0x06},
-    // - (45)
-    {0x00,0x00,0x00,0x3F,0x00,0x00,0x00,0x00},
-    // . (46)
-    {0x00,0x00,0x00,0x00,0x00,0x0C,0x0C,0x00},
-    // / (47)
-    {0x60,0x30,0x18,0x0C,0x06,0x03,0x01,0x00},
-    // 0 (48)
-    {0x3E,0x63,0x73,0x7B,0x6F,0x67,0x3E,0x00},
-    // 1 (49)
-    {0x0C,0x0E,0x0C,0x0C,0x0C,0x0C,0x3F,0x00},
-    // 2 (50)
-    {0x1E,0x33,0x30,0x1C,0x06,0x33,0x3F,0x00},
-    // 3 (51)
-    {0x1E,0x33,0x30,0x1C,0x30,0x33,0x1E,0x00},
-    // 4 (52)
-    {0x38,0x3C,0x36,0x33,0x7F,0x30,0x78,0x00},
-    // 5 (53)
-    {0x3F,0x03,0x1F,0x30,0x30,0x33,0x1E,0x00},
-    // 6 (54)
-    {0x1C,0x06,0x03,0x1F,0x33,0x33,0x1E,0x00},
-    // 7 (55)
-    {0x3F,0x33,0x30,0x18,0x0C,0x0C,0x0C,0x00},
-    // 8 (56)
-    {0x1E,0x33,0x33,0x1E,0x33,0x33,0x1E,0x00},
-    // 9 (57)
-    {0x1E,0x33,0x33,0x3E,0x30,0x18,0x0E,0x00},
-    // : (58)
-    {0x00,0x0C,0x0C,0x00,0x00,0x0C,0x0C,0x00},
-    // ; (59)
-    {0x00,0x0C,0x0C,0x00,0x00,0x0C,0x0C,0x06},
-    // < (60)
-    {0x18,0x0C,0x06,0x03,0x06,0x0C,0x18,0x00},
-    // = (61)
-    {0x00,0x00,0x3F,0x00,0x00,0x3F,0x00,0x00},
-    // > (62)
-    {0x06,0x0C,0x18,0x30,0x18,0x0C,0x06,0x00},
-    // ? (63)
-    {0x1E,0x33,0x30,0x18,0x0C,0x00,0x0C,0x00},
-    // @ (64)
-    {0x3E,0x63,0x7B,0x7B,0x7B,0x03,0x1E,0x00},
-    // A (65)
-    {0x0C,0x1E,0x33,0x33,0x3F,0x33,0x33,0x00},
-    // B (66)
-    {0x3F,0x66,0x66,0x3E,0x66,0x66,0x3F,0x00},
-    // C (67)
-    {0x3C,0x66,0x03,0x03,0x03,0x66,0x3C,0x00},
-    // D (68)
-    {0x1F,0x36,0x66,0x66,0x66,0x36,0x1F,0x00},
-    // E (69)
-    {0x7F,0x46,0x16,0x1E,0x16,0x46,0x7F,0x00},
-    // F (70)
-    {0x7F,0x46,0x16,0x1E,0x16,0x06,0x0F,0x00},
-    // G (71)
-    {0x3C,0x66,0x03,0x03,0x73,0x66,0x7C,0x00},
-    // H (72)
-    {0x33,0x33,0x33,0x3F,0x33,0x33,0x33,0x00},
-    // I (73)
-    {0x1E,0x0C,0x0C,0x0C,0x0C,0x0C,0x1E,0x00},
-    // J (74)
-    {0x78,0x30,0x30,0x30,0x33,0x33,0x1E,0x00},
-    // K (75)
-    {0x67,0x66,0x36,0x1E,0x36,0x66,0x67,0x00},
-    // L (76)
-    {0x0F,0x06,0x06,0x06,0x46,0x66,0x7F,0x00},
-    // M (77)
-    {0x63,0x77,0x7F,0x7F,0x6B,0x63,0x63,0x00},
-    // N (78)
-    {0x63,0x67,0x6F,0x7B,0x73,0x63,0x63,0x00},
-    // O (79)
-    {0x1C,0x36,0x63,0x63,0x63,0x36,0x1C,0x00},
-    // P (80)
-    {0x3F,0x66,0x66,0x3E,0x06,0x06,0x0F,0x00},
-    // Q (81)
-    {0x1E,0x33,0x33,0x33,0x3B,0x1E,0x38,0x00},
-    // R (82)
-    {0x3F,0x66,0x66,0x3E,0x36,0x66,0x67,0x00},
-    // S (83)
-    {0x1E,0x33,0x07,0x0E,0x38,0x33,0x1E,0x00},
-    // T (84)
-    {0x3F,0x2D,0x0C,0x0C,0x0C,0x0C,0x1E,0x00},
-    // U (85)
-    {0x33,0x33,0x33,0x33,0x33,0x33,0x3F,0x00},
-    // V (86)
-    {0x33,0x33,0x33,0x33,0x33,0x1E,0x0C,0x00},
-    // W (87)
-    {0x63,0x63,0x63,0x6B,0x7F,0x77,0x63,0x00},
-    // X (88)
-    {0x63,0x63,0x36,0x1C,0x1C,0x36,0x63,0x00},
-    // Y (89)
-    {0x33,0x33,0x33,0x1E,0x0C,0x0C,0x1E,0x00},
-    // Z (90)
-    {0x7F,0x63,0x31,0x18,0x4C,0x66,0x7F,0x00},
-    // [ (91)
-    {0x1E,0x06,0x06,0x06,0x06,0x06,0x1E,0x00},
-    // \ (92)
-    {0x03,0x06,0x0C,0x18,0x30,0x60,0x40,0x00},
-    // ] (93)
-    {0x1E,0x18,0x18,0x18,0x18,0x18,0x1E,0x00},
-    // ^ (94)
-    {0x08,0x1C,0x36,0x63,0x00,0x00,0x00,0x00},
-    // _ (95)
-    {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xFF},
-    // ` (96)
-    {0x0C,0x0C,0x18,0x00,0x00,0x00,0x00,0x00},
-    // a (97)
-    {0x00,0x00,0x1E,0x30,0x3E,0x33,0x6E,0x00},
-    // b (98)
-    {0x07,0x06,0x06,0x3E,0x66,0x66,0x3B,0x00},
-    // c (99)
-    {0x00,0x00,0x1E,0x33,0x03,0x33,0x1E,0x00},
-    // d (100)
-    {0x38,0x30,0x30,0x3E,0x33,0x33,0x6E,0x00},
-    // e (101)
-    {0x00,0x00,0x1E,0x33,0x3F,0x03,0x1E,0x00},
-    // f (102)
-    {0x1C,0x36,0x06,0x0F,0x06,0x06,0x0F,0x00},
-    // g (103)
-    {0x00,0x00,0x6E,0x33,0x33,0x3E,0x30,0x1F},
-    // h (104)
-    {0x07,0x06,0x36,0x6E,0x66,0x66,0x67,0x00},
-    // i (105)
-    {0x0C,0x00,0x0E,0x0C,0x0C,0x0C,0x1E,0x00},
-    // j (106)
-    {0x30,0x00,0x30,0x30,0x30,0x33,0x33,0x1E},
-    // k (107)
-    {0x07,0x06,0x66,0x36,0x1E,0x36,0x67,0x00},
-    // l (108)
-    {0x0E,0x0C,0x0C,0x0C,0x0C,0x0C,0x1E,0x00},
-    // m (109)
-    {0x00,0x00,0x33,0x7F,0x7F,0x6B,0x63,0x00},
-    // n (110)
-    {0x00,0x00,0x1F,0x33,0x33,0x33,0x33,0x00},
-    // o (111)
-    {0x00,0x00,0x1E,0x33,0x33,0x33,0x1E,0x00},
-    // p (112)
-    {0x00,0x00,0x3B,0x66,0x66,0x3E,0x06,0x0F},
-    // q (113)
-    {0x00,0x00,0x6E,0x33,0x33,0x3E,0x30,0x78},
-    // r (114)
-    {0x00,0x00,0x3B,0x6E,0x66,0x06,0x0F,0x00},
-    // s (115)
-    {0x00,0x00,0x3E,0x03,0x1E,0x30,0x1F,0x00},
-    // t (116)
-    {0x08,0x0C,0x3E,0x0C,0x0C,0x2C,0x18,0x00},
-    // u (117)
-    {0x00,0x00,0x33,0x33,0x33,0x33,0x6E,0x00},
-    // v (118)
-    {0x00,0x00,0x33,0x33,0x33,0x1E,0x0C,0x00},
-    // w (119)
-    {0x00,0x00,0x63,0x6B,0x7F,0x7F,0x36,0x00},
-    // x (120)
-    {0x00,0x00,0x63,0x36,0x1C,0x36,0x63,0x00},
-    // y (121)
-    {0x00,0x00,0x33,0x33,0x33,0x3E,0x30,0x1F},
-    // z (122)
-    {0x00,0x00,0x3F,0x19,0x0C,0x26,0x3F,0x00},
-    // { (123)
-    {0x38,0x0C,0x0C,0x07,0x0C,0x0C,0x38,0x00},
-    // | (124)
-    {0x18,0x18,0x18,0x00,0x18,0x18,0x18,0x00},
-    // } (125)
-    {0x07,0x0C,0x0C,0x38,0x0C,0x0C,0x07,0x00},
-    // ~ (126)
-    {0x6E,0x3B,0x00,0x00,0x00,0x00,0x00,0x00},
+// ===================== FONT 8x8 - TYLKO UŻYTE ZNAKI =====================
+// Indeksowane przez ASCII, NULL = nieużywany znak (wyświetli spację)
+// Używane: spacja(32) .(46) :(58) 0-9(48-57) k(107) R(82) Z(90) O(79)
+
+typedef struct { uint8_t ascii; uint8_t bmp[8]; } Glyph;
+
+static const Glyph glyphs[] = {
+    {' ', {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}},
+    {'.', {0x00,0x00,0x00,0x00,0x00,0x0C,0x0C,0x00}},
+    {':', {0x00,0x0C,0x0C,0x00,0x00,0x0C,0x0C,0x00}},
+    {'0', {0x3E,0x63,0x73,0x7B,0x6F,0x67,0x3E,0x00}},
+    {'1', {0x0C,0x0E,0x0C,0x0C,0x0C,0x0C,0x3F,0x00}},
+    {'2', {0x1E,0x33,0x30,0x1C,0x06,0x33,0x3F,0x00}},
+    {'3', {0x1E,0x33,0x30,0x1C,0x30,0x33,0x1E,0x00}},
+    {'4', {0x38,0x3C,0x36,0x33,0x7F,0x30,0x78,0x00}},
+    {'5', {0x3F,0x03,0x1F,0x30,0x30,0x33,0x1E,0x00}},
+    {'6', {0x1C,0x06,0x03,0x1F,0x33,0x33,0x1E,0x00}},
+    {'7', {0x3F,0x33,0x30,0x18,0x0C,0x0C,0x0C,0x00}},
+    {'8', {0x1E,0x33,0x33,0x1E,0x33,0x33,0x1E,0x00}},
+    {'9', {0x1E,0x33,0x33,0x3E,0x30,0x18,0x0E,0x00}},
+    {'O', {0x1C,0x36,0x63,0x63,0x63,0x36,0x1C,0x00}},
+    {'R', {0x3F,0x66,0x66,0x3E,0x36,0x66,0x67,0x00}},
+    {'Z', {0x7F,0x63,0x31,0x18,0x4C,0x66,0x7F,0x00}},
+    {'k', {0x07,0x06,0x66,0x36,0x1E,0x36,0x67,0x00}},
 };
+#define GLYPHS_COUNT (sizeof(glyphs) / sizeof(glyphs[0]))
 
 // ===================== I2C / OLED =====================
 
-static esp_err_t i2c_master_init(void) {
+static esp_adc_cal_characteristics_t adc_chars;
+
+static esp_err_t i2c_init(void) {
     i2c_config_t conf = {
         .mode             = I2C_MODE_MASTER,
-        .sda_io_num       = I2C_MASTER_SDA_IO,
-        .scl_io_num       = I2C_MASTER_SCL_IO,
+        .sda_io_num       = I2C_SDA_IO,
+        .scl_io_num       = I2C_SCL_IO,
         .sda_pullup_en    = GPIO_PULLUP_ENABLE,
         .scl_pullup_en    = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = I2C_MASTER_FREQ_HZ,
+        .master.clk_speed = I2C_FREQ_HZ,
     };
-    i2c_param_config(I2C_MASTER_NUM, &conf);
-    return i2c_driver_install(I2C_MASTER_NUM, conf.mode, 0, 0, 0);
+    i2c_param_config(I2C_NUM, &conf);
+    return i2c_driver_install(I2C_NUM, conf.mode, 0, 0, 0);
 }
 
-static esp_err_t oled_send_cmd(uint8_t cmd) {
+static void oled_cmd(uint8_t cmd) {
     uint8_t buf[2] = {0x00, cmd};
-    return i2c_master_write_to_device(I2C_MASTER_NUM, OLED_I2C_ADDR,
-                                      buf, 2, pdMS_TO_TICKS(10));
+    i2c_master_write_to_device(I2C_NUM, OLED_ADDR, buf, 2, pdMS_TO_TICKS(10));
 }
 
 static void oled_init(void) {
     vTaskDelay(pdMS_TO_TICKS(100));
-    oled_send_cmd(0xAE); // display off
-    oled_send_cmd(0xD5); oled_send_cmd(0x80); // clock
-    oled_send_cmd(0xA8); oled_send_cmd(0x3F); // multiplex 63
-    oled_send_cmd(0xD3); oled_send_cmd(0x00); // display offset 0
-    oled_send_cmd(0x40);                       // start line 0
-    oled_send_cmd(0x8D); oled_send_cmd(0x14); // charge pump ON
-    oled_send_cmd(0x20); oled_send_cmd(0x00); // horizontal addressing
-    oled_send_cmd(0xA1);                       // segment remap
-    oled_send_cmd(0xC8);                       // COM scan direction
-    oled_send_cmd(0xDA); oled_send_cmd(0x12); // COM pins
-    oled_send_cmd(0x81); oled_send_cmd(0xCF); // contrast
-    oled_send_cmd(0xD9); oled_send_cmd(0xF1); // pre-charge
-    oled_send_cmd(0xDB); oled_send_cmd(0x40); // VCOMH
-    oled_send_cmd(0xA4);                       // all pixels from RAM
-    oled_send_cmd(0xA6);                       // normal display
-    oled_send_cmd(0xAF);                       // display ON
+    const uint8_t init_seq[] = {
+        0xAE,               // display off
+        0xD5, 0x80,         // clock div
+        0xA8, 0x3F,         // multiplex
+        0xD3, 0x00,         // offset
+        0x40,               // start line
+        0x8D, 0x14,         // charge pump on
+        0x20, 0x00,         // horizontal addr mode
+        0xA1,               // seg remap
+        0xC8,               // com scan dir
+        0xDA, 0x12,         // com pins
+        0x81, 0xCF,         // contrast
+        0xD9, 0xF1,         // precharge
+        0xDB, 0x40,         // vcomh
+        0xA4,               // display from RAM
+        0xA6,               // normal (not inverted)
+        0xAF                // display on
+    };
+    for (size_t i = 0; i < sizeof(init_seq); i++) oled_cmd(init_seq[i]);
 }
 
 static void oled_flush(void) {
-    // Ustaw zakres kolumn i stron
-    oled_send_cmd(0x21); oled_send_cmd(0x00); oled_send_cmd(0x7F);
-    oled_send_cmd(0x22); oled_send_cmd(0x00); oled_send_cmd(0x07);
-
-    // Wyślij bufor partiami po 32 bajty (ograniczenie I2C bufora)
+    oled_cmd(0x21); oled_cmd(0x00); oled_cmd(0x7F); // col 0-127
+    oled_cmd(0x22); oled_cmd(0x00); oled_cmd(0x07); // page 0-7
     uint8_t tmp[33];
-    tmp[0] = 0x40; // tryb danych
-    for (int i = 0; i < OLED_WIDTH * OLED_PAGES; i += 32) {
+    tmp[0] = 0x40;
+    for (int i = 0; i < OLED_W * OLED_PAGES; i += 32) {
         memcpy(&tmp[1], &oled_buf[i], 32);
-        i2c_master_write_to_device(I2C_MASTER_NUM, OLED_I2C_ADDR,
-                                   tmp, 33, pdMS_TO_TICKS(20));
+        i2c_master_write_to_device(I2C_NUM, OLED_ADDR, tmp, 33, pdMS_TO_TICKS(20));
     }
 }
 
@@ -294,27 +124,32 @@ static void oled_clear(void) {
     memset(oled_buf, 0, sizeof(oled_buf));
 }
 
-// Rysuj znak 8x8 na pozycji (col=0..15, page=0..7)
-static void oled_draw_char(int col, int page, char c) {
-    if (c < 32 || c > 126) c = '?';
-    const uint8_t *glyph = font8x8[c - 32];
-    int x = col * 8;
-    for (int px = 0; px < 8; px++) {
-        if (x + px >= OLED_WIDTH) break;
-        oled_buf[page * OLED_WIDTH + x + px] = glyph[px];
-    }
+static const uint8_t* find_glyph(char c) {
+    for (size_t i = 0; i < GLYPHS_COUNT; i++)
+        if (glyphs[i].ascii == (uint8_t)c) return glyphs[i].bmp;
+    return glyphs[0].bmp; // fallback: spacja
 }
 
-// Rysuj napis (maks. 16 znaków) w wierszu page
+// col: 0-15, page: 0-7
+static void oled_draw_char(int col, int page, char c) {
+    const uint8_t *g = find_glyph(c);
+    int x = col * 8;
+    for (int px = 0; px < 8 && (x + px) < OLED_W; px++)
+        oled_buf[page * OLED_W + x + px] = g[px];
+}
+
 static void oled_draw_str(int col, int page, const char *str) {
-    while (*str && col < 16) {
+    while (*str && col < 16)
         oled_draw_char(col++, page, *str++);
-    }
+}
+
+// Pozioma linia na górze danej strony (1 piksel)
+static void oled_hline(int page) {
+    for (int i = 0; i < OLED_W; i++)
+        oled_buf[page * OLED_W + i] |= 0x01;
 }
 
 // ===================== ADC =====================
-
-static esp_adc_cal_characteristics_t adc_chars;
 
 static void adc_init(void) {
     adc1_config_width(ADC_WIDTH_BIT_12);
@@ -325,115 +160,67 @@ static void adc_init(void) {
                               ADC_WIDTH_BIT_12, 1100, &adc_chars);
 }
 
-// Zwraca uśrednione napięcie [mV]
 static float adc_read_mv(adc1_channel_t ch) {
     uint32_t sum = 0;
-    for (int i = 0; i < ADC_SAMPLES; i++) {
-        sum += adc1_get_raw(ch);
-    }
-    uint32_t raw_avg = sum / ADC_SAMPLES;
-    return (float)esp_adc_cal_raw_to_voltage(raw_avg, &adc_chars);
+    for (int i = 0; i < ADC_SAMPLES; i++) sum += adc1_get_raw(ch);
+    return (float)esp_adc_cal_raw_to_voltage(sum / ADC_SAMPLES, &adc_chars);
 }
 
 // ===================== OBLICZENIA =====================
 
-typedef struct {
-    float Zx;   // impedancja [Ohm]
-    float Rx;   // rezystancja [Ohm]
-    float X;    // reaktancja [Ohm]
-    bool  valid;
-} ImpResult;
-
-static ImpResult calculate(float U, float UN, float UX) {
-    ImpResult res = {0};
-
-    // Sprawdzenie minimalnych wartości (zabezpieczenie przed /0)
-    if (UN < 10.0f || UX < 10.0f || U < 10.0f) {
-        return res; // za małe napięcia - brak sygnału
-    }
-
-    // Zx = RN * (UX / UN)
-    float Zx = RN * (UX / UN);
-
-    // cos(phi) = (U^2 - UN^2 - UX^2) / (2 * UN * UX)
-    float cos_phi = (U*U - UN*UN - UX*UX) / (2.0f * UN * UX);
-
-    // Zabezpieczenie zakresu cos_phi [-1, 1]
-    if (cos_phi >  1.0f) cos_phi =  1.0f;
-    if (cos_phi < -1.0f) cos_phi = -1.0f;
-
-    // Rx = Zx * cos(phi)
-    float Rx = Zx * cos_phi;
-
-    // X = sqrt(Zx^2 - Rx^2)
-    float x2 = Zx*Zx - Rx*Rx;
-    float X  = (x2 >= 0.0f) ? sqrtf(x2) : 0.0f;
-
-    res.Zx    = Zx;
-    res.Rx    = Rx;
-    res.X     = X;
-    res.valid = true;
-    return res;
-}
-
-// Formatowanie wartości z jednostką (Ohm / kOhm)
-static void format_ohm(char *buf, int buflen, const char *label, float val) {
-    if (fabsf(val) >= 1000.0f) {
-        snprintf(buf, buflen, "%s: %.2fk", label, val / 1000.0f);
-    } else {
-        snprintf(buf, buflen, "%s: %.1f", label, val);
-    }
+// Formatuje wartość Ohm -> "123.4" lub "1.23k", wpisuje do buf
+// Zwraca wskaźnik na buf
+static const char* fmt_ohm(char *buf, int len, float val) {
+    if (fabsf(val) >= 1000.0f)
+        snprintf(buf, len, "%.2fk", val / 1000.0f);
+    else
+        snprintf(buf, len, "%.1f", val);
+    return buf;
 }
 
 // ===================== GŁÓWNA PĘTLA =====================
 
 void app_main(void) {
-    // Inicjalizacja
-    ESP_ERROR_CHECK(i2c_master_init());
+    ESP_ERROR_CHECK(i2c_init());
     oled_init();
     adc_init();
 
-    char line1[20], line2[20], line3[20], line4[20];
+    char zx_str[12], rx_str[12];
+    char line[18];
 
     while (1) {
-        // Odczyt napięć [mV]
         float U  = adc_read_mv(ADC_CH_U);
         float UN = adc_read_mv(ADC_CH_UN);
         float UX = adc_read_mv(ADC_CH_UX);
 
-        // Obliczenia
-        ImpResult r = calculate(U, UN, UX);
-
-        // Przygotowanie wyświetlacza
         oled_clear();
 
-        // Nagłówek - wiersz 0 i 1 (czcionka 8px -> page 0)
-        oled_draw_str(1, 0, "IMPEDANCEMETER");
-        // Linia oddzielająca - rysuj kreskę poziomą w page 1
-        for (int i = 0; i < OLED_WIDTH; i++) {
-            oled_buf[1 * OLED_WIDTH + i] = 0x01; // jeden piksel na dole strony
-        }
-
-        if (r.valid) {
-            format_ohm(line1, sizeof(line1), "Zx", r.Zx);
-            format_ohm(line2, sizeof(line2), "Rx", r.Rx);
-            format_ohm(line3, sizeof(line3), "X ", r.X);
-
-            oled_draw_str(0, 2, line1);   // Zx w page 2
-            oled_draw_str(0, 4, line2);   // Rx w page 4
-            oled_draw_str(0, 6, line3);   // X  w page 6
+        if (UN < 10.0f || UX < 10.0f || U < 10.0f) {
+            // Brak sygnału
+            oled_draw_str(1, 3, "No signal");
         } else {
-            oled_draw_str(1, 3, "No signal!");
-            oled_draw_str(1, 5, "Check input");
-        }
+            // Zx = RN * (UX / UN)
+            float Zx = RN * (UX / UN);
 
-        // Debug - opcjonalne info o napięciach w page 7 (małe)
-        // snprintf(line4, sizeof(line4), "%.0f %.0f %.0f", U, UN, UX);
-        // oled_draw_str(0, 7, line4);
+            // cos(phi) = (U^2 - UN^2 - UX^2) / (2 * UN * UX)
+            float cos_phi = (U*U - UN*UN - UX*UX) / (2.0f * UN * UX);
+            if (cos_phi >  1.0f) cos_phi =  1.0f;
+            if (cos_phi < -1.0f) cos_phi = -1.0f;
+
+            // Rx = Zx * cos(phi)
+            float Rx = Zx * cos_phi;
+
+            // Wyświetl Zx (page 1-2) i Rx (page 4-5)
+            oled_hline(1);
+            snprintf(line, sizeof(line), "Zx: %s", fmt_ohm(zx_str, sizeof(zx_str), Zx));
+            oled_draw_str(0, 2, line);
+
+            oled_hline(4);
+            snprintf(line, sizeof(line), "Rx: %s", fmt_ohm(rx_str, sizeof(rx_str), Rx));
+            oled_draw_str(0, 5, line);
+        }
 
         oled_flush();
-
-        // Odświeżanie co 500ms
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
